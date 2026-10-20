@@ -32,6 +32,7 @@ After reboot the Mac sees a "Pi USB Mouse". Move the mouse on the Pi.
 ## Notes
 - The bridge grabs the physical mouse exclusively, so the Pi's own desktop
   (if any) won't react to it.
-- Supports movement, 5 buttons, vertical scroll; hot-plug safe.
+- Supports movement, 5 buttons, vertical and horizontal scroll (including
+  hi-res-only wheels); hot-plug safe.
 - macOS may show a one-time "Keyboard Setup Assistant" prompt for new HID devices;
   for a mouse this normally doesn't appear.

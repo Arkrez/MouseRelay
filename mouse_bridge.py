@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Reads a physical USB mouse plugged into the Pi and forwards its movement,
-buttons and scroll wheel to the Mac through the Pi's USB gadget HID device
+buttons and scroll wheels to the Mac through the Pi's USB gadget HID device
 (/dev/hidg0). Hot-plug safe: unplug/replug the mouse and it reconnects.
 """
 import asyncio
@@ -37,18 +37,20 @@ def open_hid():
             time.sleep(2)
 
 
-def send_report(dx, dy, wheel):
+def clamp(v):
+    return max(-127, min(127, v))
+
+
+def send_report(dx, dy, wheel, hwheel=0):
     """Send HID reports; deltas are int8, so large moves are split up."""
     global hid_fd
     first = True
-    while first or dx or dy or wheel:
+    while first or dx or dy or wheel or hwheel:
         first = False
-        sx = max(-127, min(127, dx))
-        sy = max(-127, min(127, dy))
-        sw = max(-127, min(127, wheel))
-        dx, dy, wheel = dx - sx, dy - sy, wheel - sw
+        sx, sy, sw, sh = clamp(dx), clamp(dy), clamp(wheel), clamp(hwheel)
+        dx, dy, wheel, hwheel = dx - sx, dy - sy, wheel - sw, hwheel - sh
         try:
-            os.write(hid_fd, struct.pack("<Bbbb", buttons, sx, sy, sw))
+            os.write(hid_fd, struct.pack("<Bbbbb", buttons, sx, sy, sw, sh))
         except BlockingIOError:
             pass  # Mac busy/asleep; drop the report
         except OSError as err:
@@ -60,7 +62,12 @@ def send_report(dx, dy, wheel):
 async def handle_device(dev: InputDevice):
     global buttons
     print(f"Forwarding: {dev.name} ({dev.path})")
-    dx = dy = wheel = 0
+    rel = dev.capabilities().get(e.EV_REL, [])
+    # Some mice only report high-resolution scrolling (120 units per notch).
+    hires_v = e.REL_WHEEL not in rel and e.REL_WHEEL_HI_RES in rel
+    hires_h = e.REL_HWHEEL not in rel and e.REL_HWHEEL_HI_RES in rel
+    hires_acc_v = hires_acc_h = 0
+    dx = dy = wheel = hwheel = 0
     try:
         dev.grab()  # keep the Pi's own desktop from also reacting
         async for ev in dev.async_read_loop():
@@ -71,18 +78,29 @@ async def handle_device(dev: InputDevice):
                     dy += ev.value
                 elif ev.code == e.REL_WHEEL:
                     wheel += ev.value
+                elif ev.code == e.REL_HWHEEL:
+                    hwheel += ev.value
+                elif ev.code == e.REL_WHEEL_HI_RES and hires_v:
+                    hires_acc_v += ev.value
+                    notches = int(hires_acc_v / 120)
+                    hires_acc_v -= notches * 120
+                    wheel += notches
+                elif ev.code == e.REL_HWHEEL_HI_RES and hires_h:
+                    hires_acc_h += ev.value
+                    notches = int(hires_acc_h / 120)
+                    hires_acc_h -= notches * 120
+                    hwheel += notches
             elif ev.type == e.EV_KEY and ev.code in BUTTON_BITS:
                 if ev.value:
                     buttons |= BUTTON_BITS[ev.code]
                 else:
                     buttons &= ~BUTTON_BITS[ev.code]
-                dx, dy, wheel = dx, dy, wheel
-                send_report(dx, dy, wheel)
-                dx = dy = wheel = 0
+                send_report(dx, dy, wheel, hwheel)
+                dx = dy = wheel = hwheel = 0
             elif ev.type == e.EV_SYN and ev.code == e.SYN_REPORT:
-                if dx or dy or wheel:
-                    send_report(dx, dy, wheel)
-                    dx = dy = wheel = 0
+                if dx or dy or wheel or hwheel:
+                    send_report(dx, dy, wheel, hwheel)
+                    dx = dy = wheel = hwheel = 0
     except OSError:
         pass  # device unplugged
     finally:
